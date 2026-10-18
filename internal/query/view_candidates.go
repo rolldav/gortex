@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"sort"
 
 	"github.com/zzet/gortex/internal/graph"
@@ -84,7 +85,10 @@ func (e *Engine) viewTextCandidates(
 			exhausted[i+1] = true
 			continue
 		}
-		raw[i+1] = layer.Search.Search(query, fetch)
+		raw[i+1] = e.searchBackendContext(layer.Search, query, fetch)
+		if e.requestContext().Err() != nil {
+			return nil
+		}
 		exhausted[i+1] = len(raw[i+1]) < fetch
 	}
 
@@ -123,7 +127,10 @@ func (e *Engine) viewTextCandidates(
 			if i == 0 {
 				raw[i] = refillBase(nextFetch)
 			} else {
-				raw[i] = e.viewLayers[i-1].Search.Search(query, nextFetch)
+				raw[i] = e.searchBackendContext(e.viewLayers[i-1].Search, query, nextFetch)
+				if e.requestContext().Err() != nil {
+					return nil
+				}
 			}
 			if len(raw[i]) > previous {
 				grew = true
@@ -143,29 +150,55 @@ func (e *Engine) viewTextCandidates(
 	}
 }
 
-// viewBaseTextRefill repeats only the indexed corpus's text lane at a deeper
+// viewBaseTextRefillContext repeats only the indexed corpus's text lane at a deeper
 // width. Bundle search is preferred because it preserves repository narrowing
 // and never wakes the vector channel merely to refill masked BM25 candidates.
-func viewBaseTextRefill(backend search.Backend, query string, repoAllow []string) func(int) []search.SearchResult {
+func viewBaseTextRefillContext(ctx context.Context, backend search.Backend, query string, repoAllow []string) func(int) []search.SearchResult {
 	return func(limit int) []search.SearchResult {
+		if ctx.Err() != nil {
+			return nil
+		}
 		if backend == nil || limit <= 0 {
 			return nil
 		}
 		if len(repoAllow) > 0 {
-			if scoped, ok := backend.(search.ScopedSymbolBundleSearcherBackend); ok {
+			if scoped, ok := backend.(search.ContextScopedSymbolBundleSearcherBackend); ok {
+				bundles := scoped.SearchSymbolBundlesScopedContext(ctx, query, repoAllow, limit)
+				if ctx.Err() != nil {
+					return nil
+				}
+				if bundles != nil {
+					return viewBundleResults(bundles)
+				}
+			} else if scoped, ok := backend.(search.ScopedSymbolBundleSearcherBackend); ok {
 				if bundles := scoped.SearchSymbolBundlesScoped(query, repoAllow, limit); bundles != nil {
 					return viewBundleResults(bundles)
 				}
 			}
 		}
-		if bundled, ok := backend.(search.SymbolBundleSearcherBackend); ok {
+		if bundled, ok := backend.(search.ContextSymbolBundleSearcherBackend); ok {
+			bundles := bundled.SearchSymbolBundlesContext(ctx, query, limit)
+			if ctx.Err() != nil {
+				return nil
+			}
+			if bundles != nil {
+				return viewBundleResults(bundles)
+			}
+		} else if bundled, ok := backend.(search.SymbolBundleSearcherBackend); ok {
 			if bundles := bundled.SearchSymbolBundles(query, limit); bundles != nil {
 				return viewBundleResults(bundles)
 			}
 		}
+		if channels, ok := backend.(search.ContextChannelSearcher); ok {
+			text, _, _ := channels.SearchChannelsTimedContext(ctx, query, limit)
+			return text
+		}
 		if channels, ok := backend.(search.ChannelSearcher); ok {
 			text, _ := channels.SearchChannels(query, limit)
 			return text
+		}
+		if contextual, ok := backend.(search.ContextSearcher); ok {
+			return contextual.SearchContext(ctx, query, limit)
 		}
 		return backend.Search(query, limit)
 	}

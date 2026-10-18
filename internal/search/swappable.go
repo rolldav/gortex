@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"sync"
 
 	"github.com/zzet/gortex/internal/embedding"
@@ -261,4 +262,103 @@ func (s *Swappable) SizeBytes() uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return BackendSize(s.inner)
+}
+
+func (s *Swappable) SearchSymbolBundlesContext(ctx context.Context, query string, limit int) []SymbolBundle {
+	if ctx.Err() != nil || s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if b, ok := s.inner.(ContextSymbolBundleSearcherBackend); ok {
+		return b.SearchSymbolBundlesContext(ctx, query, limit)
+	}
+	if b, ok := s.inner.(SymbolBundleSearcherBackend); ok {
+		return b.SearchSymbolBundles(query, limit)
+	}
+	return nil
+}
+
+func (s *Swappable) SearchSymbolBundlesScopedContext(ctx context.Context, query string, allow []string, limit int) []SymbolBundle {
+	if ctx.Err() != nil || s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if b, ok := s.inner.(ContextScopedSymbolBundleSearcherBackend); ok {
+		return b.SearchSymbolBundlesScopedContext(ctx, query, allow, limit)
+	}
+	if b, ok := s.inner.(ScopedSymbolBundleSearcherBackend); ok {
+		return b.SearchSymbolBundlesScoped(query, allow, limit)
+	}
+	return nil
+}
+
+func (s *Swappable) SearchContext(ctx context.Context, query string, limit int) []SearchResult {
+	if ctx.Err() != nil || s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.inner == nil {
+		return nil
+	}
+	if b, ok := s.inner.(ContextSearcher); ok {
+		return b.SearchContext(ctx, query, limit)
+	}
+	return s.inner.Search(query, limit)
+}
+
+func (s *Swappable) DocCountContext(ctx context.Context) (int, bool) {
+	if ctx.Err() != nil || s == nil {
+		return 0, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.inner == nil {
+		return 0, false
+	}
+	if b, ok := s.inner.(ContextDocCounter); ok {
+		return b.DocCountContext(ctx)
+	}
+	if b, ok := s.inner.(DocCounter); ok {
+		return b.DocCount()
+	}
+	return s.inner.Count(), true
+}
+
+func (s *Swappable) SearchChannelsTimedContext(ctx context.Context, query string, limit int) ([]SearchResult, []string, ChannelTimings) {
+	if ctx.Err() != nil {
+		return nil, nil, ChannelTimings{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if b, ok := s.inner.(ContextChannelSearcher); ok {
+		return b.SearchChannelsTimedContext(ctx, query, limit)
+	}
+	if b, ok := s.inner.(ChannelSearcher); ok {
+		t, v := b.SearchChannels(query, limit)
+		return t, v, ChannelTimings{}
+	}
+	if b, ok := s.inner.(ContextSearcher); ok {
+		return b.SearchContext(ctx, query, limit), nil, ChannelTimings{}
+	}
+	return s.inner.Search(query, limit), nil, ChannelTimings{}
+}
+
+func (s *Swappable) VectorChannelOnlyContext(ctx context.Context, query string, limit int) ([]string, ChannelTimings) {
+	if ctx.Err() != nil {
+		return nil, ChannelTimings{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if b, ok := s.inner.(ContextVectorOnly); ok {
+		return b.VectorChannelOnlyContext(ctx, query, limit)
+	}
+	if b, ok := s.inner.(interface {
+		VectorChannelOnly(string, int) ([]string, ChannelTimings)
+	}); ok {
+		return b.VectorChannelOnly(query, limit)
+	}
+	return nil, ChannelTimings{}
 }

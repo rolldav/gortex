@@ -89,8 +89,12 @@ func (s *Store) UpsertSymbolFTS(nodeID, tokens string) error {
 // every document. One row per document is the invariant the delete path
 // maintains, so this is the corpus size.
 func (s *Store) SymbolFTSCount() (int, error) {
+	return s.SymbolFTSCountContext(context.Background())
+}
+
+func (s *Store) SymbolFTSCountContext(ctx context.Context) (int, error) {
 	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM symbol_fts_rowid WHERE view_gen = ?`, s.viewGen).Scan(&count); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM symbol_fts_rowid WHERE view_gen = ?`, s.viewGen).Scan(&count); err != nil {
 		return 0, err
 	}
 	return count, nil
@@ -634,7 +638,12 @@ func (s *Store) BuildSymbolIndex() error {
 // SQLite's bm25() returns lower-is-better, so the stored Score is its
 // negation (higher-is-better, matching the SymbolHit contract).
 func (s *Store) SearchSymbols(query string, limit int) ([]graph.SymbolHit, error) {
-	return s.SearchSymbolsRepoScoped(query, nil, limit)
+	return s.SearchSymbolsContext(context.Background(), query, limit)
+}
+
+// SearchSymbolsContext propagates request cancellation through exact and FTS tiers.
+func (s *Store) SearchSymbolsContext(ctx context.Context, query string, limit int) ([]graph.SymbolHit, error) {
+	return s.SearchSymbolsRepoScopedContext(ctx, query, nil, limit)
 }
 
 // SearchSymbolsRepoScoped is SearchSymbols narrowed to the repoAllow
@@ -646,6 +655,16 @@ func (s *Store) SearchSymbols(query string, limit int) ([]graph.SymbolHit, error
 // without the IN). A nil / empty repoAllow is the exact unscoped
 // behaviour.
 func (s *Store) SearchSymbolsRepoScoped(query string, repoAllow []string, limit int) ([]graph.SymbolHit, error) {
+	return s.SearchSymbolsRepoScopedContext(context.Background(), query, repoAllow, limit)
+}
+
+// SearchSymbolsRepoScopedContext preserves generation and repository predicates
+// while allowing both connection acquisition and SQLite execution to be cancelled.
+func (s *Store) SearchSymbolsRepoScopedContext(ctx context.Context, query string, repoAllow []string, limit int) ([]graph.SymbolHit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	if query == "" {
 		return nil, nil
 	}
@@ -669,7 +688,10 @@ func (s *Store) SearchSymbolsRepoScoped(query string, repoAllow []string, limit 
 	// module named "Extensions" would otherwise eclipse every
 	// `*Extensions` class the FTS ranks first.
 	if isIdentifierQuery(query) {
-		ns := s.FindNodesByName(query)
+		ns := s.queryNodesContext(ctx, s.stmtFindByName, query, s.viewGen)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if len(ns) > 0 {
 			out := make([]graph.SymbolHit, 0, minInt(len(ns), limit))
 			for _, n := range ns {
@@ -721,7 +743,7 @@ WHERE symbol_fts MATCH ?`
 	}
 	q += ` ORDER BY bm25(symbol_fts) LIMIT ?`
 	args = append(args, limit)
-	rows, err := s.db.Query(q, args...)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -812,27 +834,31 @@ func escapeFTSQuote(t string) string {
 // through this when the backend implements SymbolBundleSearcher,
 // pre-seeding rerank.Context's edge caches.
 func (s *Store) SearchSymbolBundles(query string, limit int) ([]graph.SymbolBundle, error) {
-	hits, err := s.SearchSymbols(query, limit)
-	if err != nil {
-		return nil, err
-	}
-	return s.bundlesForHits(hits)
+	return s.SearchSymbolBundlesContext(context.Background(), query, limit)
 }
 
-// SearchSymbolBundlesRepoScoped is SearchSymbolBundles over the
-// repo-scoped hit query — see SearchSymbolsRepoScoped for why the
-// narrowing must happen inside the FTS query.
+func (s *Store) SearchSymbolBundlesContext(ctx context.Context, query string, limit int) ([]graph.SymbolBundle, error) {
+	return s.SearchSymbolBundlesRepoScopedContext(ctx, query, nil, limit)
+}
+
 func (s *Store) SearchSymbolBundlesRepoScoped(query string, repoAllow []string, limit int) ([]graph.SymbolBundle, error) {
-	hits, err := s.SearchSymbolsRepoScoped(query, repoAllow, limit)
+	return s.SearchSymbolBundlesRepoScopedContext(context.Background(), query, repoAllow, limit)
+}
+
+func (s *Store) SearchSymbolBundlesRepoScopedContext(ctx context.Context, query string, repoAllow []string, limit int) ([]graph.SymbolBundle, error) {
+	hits, err := s.SearchSymbolsRepoScopedContext(ctx, query, repoAllow, limit)
 	if err != nil {
 		return nil, err
 	}
-	return s.bundlesForHits(hits)
+	return s.bundlesForHitsContext(ctx, hits)
 }
 
-// bundlesForHits materialises ranked hits into SymbolBundles through
-// the content-addressed cache + batched node/edge fetches.
-func (s *Store) bundlesForHits(hits []graph.SymbolHit) ([]graph.SymbolBundle, error) {
+// bundlesForHitsContext materialises ranked hits through the content-addressed
+// cache and cancellable batched node/edge fetches.
+func (s *Store) bundlesForHitsContext(ctx context.Context, hits []graph.SymbolHit) ([]graph.SymbolBundle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(hits) == 0 {
 		return nil, nil
 	}
@@ -877,9 +903,19 @@ func (s *Store) bundlesForHits(hits []graph.SymbolHit) ([]graph.SymbolBundle, er
 	var nodes map[string]*graph.Node
 	var out, in map[string][]*graph.Edge
 	if len(missIDs) > 0 {
-		nodes = s.GetNodesByIDs(missIDs)
-		out = s.GetOutEdgesByNodeIDs(missIDs)
-		in = s.GetInEdgesByNodeIDs(missIDs)
+		var err error
+		nodes, err = s.GetNodesByIDsContext(ctx, missIDs)
+		if err != nil {
+			return nil, err
+		}
+		out, err = s.bundleEdgesByNodeIDsContext(ctx, missIDs, "from_id")
+		if err != nil {
+			return nil, err
+		}
+		in, err = s.bundleEdgesByNodeIDsContext(ctx, missIDs, "to_id")
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	bundles := make([]graph.SymbolBundle, 0, len(ids))
@@ -928,4 +964,53 @@ func isIdentifierQuery(q string) bool {
 		}
 	}
 	return true
+}
+
+// FindNodesByNameContext is the optional cancellable exact-name splice used by
+// request-local query engines; legacy graph.Reader remains unchanged.
+func (s *Store) FindNodesByNameContext(ctx context.Context, name string) []*graph.Node {
+	return s.queryNodesContext(ctx, s.stmtFindByName, name, s.viewGen)
+}
+
+// Bundle payloads need the full edge metadata (including similarity and promoted
+// resolve/semantic fields); bounded localization's light projection is not a
+// substitute. Keep the historical batch shape, adding only request lifetime.
+func (s *Store) bundleEdgesByNodeIDsContext(ctx context.Context, ids []string, col string) (map[string][]*graph.Edge, error) {
+	uniq := dedupeNonEmpty(ids)
+	out := make(map[string][]*graph.Edge, len(uniq))
+	for i := 0; i < len(uniq); i += lookupChunkSize {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		chunk := uniq[i:minInt(i+lookupChunkSize, len(uniq))]
+		q := `SELECT ` + lookupEdgeCols + ` FROM edges WHERE ` + col + ` IN (` + inPlaceholders(len(chunk)) + `) AND view_gen = ?`
+		rows, err := s.db.QueryContext(ctx, q, append(toAnyArgs(chunk), s.viewGen)...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			edge, err := s.scanEdgeCursor(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if edge == nil {
+				continue
+			}
+			key := edge.From
+			if col == "to_id" {
+				key = edge.To
+			}
+			out[key] = append(out[key], edge)
+		}
+		err = rows.Err()
+		closeErr := rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+	}
+	return out, nil
 }

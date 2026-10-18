@@ -205,12 +205,12 @@ func (s *Server) engineFor(ctx context.Context) *query.Engine {
 	}
 	view := requestViewFromContext(ctx)
 	if v := OverlayViewFromContext(ctx); v != nil {
-		return s.engine.WithViewLayers(v, view.candidateLayers())
+		return s.engine.WithViewLayers(v, view.candidateLayers()).WithContext(ctx)
 	}
 	if view.routed() {
-		return s.engine.WithViewLayers(view.reader, view.candidateLayers())
+		return s.engine.WithViewLayers(view.reader, view.candidateLayers()).WithContext(ctx)
 	}
-	return s.engine
+	return s.engine.WithContext(ctx)
 }
 
 // overlayLayerCacheEntry is one (sessionID, content-hash sum) bucket

@@ -85,11 +85,15 @@ type ChannelTimings struct {
 // re-running text Search would double-pay the FTS cost. Returns
 // nil and a zero ChannelTimings when the vector index is empty.
 func (h *HybridBackend) VectorChannelOnly(query string, limit int) ([]string, ChannelTimings) {
+	return h.VectorChannelOnlyContext(context.Background(), query, limit)
+}
+
+func (h *HybridBackend) VectorChannelOnlyContext(parent context.Context, query string, limit int) ([]string, ChannelTimings) {
 	var stats ChannelTimings
 	if h == nil || h.vector == nil || h.vector.Count() == 0 {
 		return nil, stats
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	embedStart := time.Now()
 	queryVec, err := h.embedder.Embed(ctx, query)
@@ -165,14 +169,29 @@ func (h *HybridBackend) SearchSymbolBundlesScoped(query string, repoAllow []stri
 }
 
 func (h *HybridBackend) searchChannels(query string, limit int) ([]SearchResult, []string, ChannelTimings) {
+	return h.SearchChannelsTimedContext(context.Background(), query, limit)
+}
+
+func (h *HybridBackend) SearchChannelsTimedContext(parent context.Context, query string, limit int) ([]SearchResult, []string, ChannelTimings) {
 	var stats ChannelTimings
 	tStart := time.Now()
-	textResults := h.text.Search(query, limit*2)
+	if parent.Err() != nil {
+		return nil, nil, stats
+	}
+	var textResults []SearchResult
+	if b, ok := h.text.(ContextSearcher); ok {
+		textResults = b.SearchContext(parent, query, limit*2)
+	} else {
+		textResults = h.text.Search(query, limit*2)
+	}
+	if parent.Err() != nil {
+		return nil, nil, stats
+	}
 	stats.TextMS = time.Since(tStart).Milliseconds()
 
 	var vecIDs []string
 	if h.vector.Count() > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 		defer cancel()
 		embedStart := time.Now()
 		queryVec, err := h.embedder.Embed(ctx, query)
@@ -340,4 +359,75 @@ func alphaFuse(textResults []SearchResult, vecIDs []string, alpha float64, k, li
 		out[i] = SearchResult{ID: r.id, Score: r.score}
 	}
 	return out
+}
+
+func (s *HybridBackend) SearchSymbolBundlesContext(ctx context.Context, query string, limit int) []SymbolBundle {
+	if ctx.Err() != nil || s == nil {
+		return nil
+	}
+
+	if b, ok := s.text.(ContextSymbolBundleSearcherBackend); ok {
+		return b.SearchSymbolBundlesContext(ctx, query, limit)
+	}
+	if b, ok := s.text.(SymbolBundleSearcherBackend); ok {
+		return b.SearchSymbolBundles(query, limit)
+	}
+	return nil
+}
+
+func (s *HybridBackend) SearchSymbolBundlesScopedContext(ctx context.Context, query string, allow []string, limit int) []SymbolBundle {
+	if ctx.Err() != nil || s == nil {
+		return nil
+	}
+
+	if b, ok := s.text.(ContextScopedSymbolBundleSearcherBackend); ok {
+		return b.SearchSymbolBundlesScopedContext(ctx, query, allow, limit)
+	}
+	if b, ok := s.text.(ScopedSymbolBundleSearcherBackend); ok {
+		return b.SearchSymbolBundlesScoped(query, allow, limit)
+	}
+	return nil
+}
+
+func (s *HybridBackend) SearchContext(ctx context.Context, query string, limit int) []SearchResult {
+	if s == nil || ctx.Err() != nil {
+		return nil
+	}
+	text, vec, _ := s.SearchChannelsTimedContext(ctx, query, limit)
+	if ctx.Err() != nil {
+		return nil
+	}
+	if len(vec) == 0 {
+		if len(text) > limit {
+			return text[:limit]
+		}
+		return text
+	}
+	return alphaFuse(text, vec, rerank.AlphaFor(query), s.k, limit)
+}
+
+func (s *HybridBackend) DocCountContext(ctx context.Context) (int, bool) {
+	if s == nil || ctx.Err() != nil {
+		return 0, false
+	}
+	var n int
+	var known bool
+	if b, ok := s.text.(ContextDocCounter); ok {
+		n, known = b.DocCountContext(ctx)
+	} else if b, ok := s.text.(DocCounter); ok {
+		n, known = b.DocCount()
+	} else if s.text != nil {
+		n = s.text.Count()
+		known = true
+	}
+	if ctx.Err() != nil {
+		return 0, false
+	}
+	if n > 0 {
+		return n, known
+	}
+	if s.vector != nil && s.vector.Count() > 0 {
+		return s.vector.Count(), true
+	}
+	return n, known
 }

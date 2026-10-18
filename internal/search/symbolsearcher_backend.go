@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
@@ -195,3 +196,97 @@ func (b *SymbolSearcherBackend) DocCount() (int, bool) {
 // graph.Store; closing it from the search adapter would race the
 // indexer's own lifecycle.
 func (b *SymbolSearcherBackend) Close() {}
+
+// ContextSymbolBundleSearcherBackend is the optional deadline-aware bundle path.
+type ContextSymbolBundleSearcherBackend interface {
+	SearchSymbolBundlesContext(context.Context, string, int) []SymbolBundle
+}
+
+type ContextScopedSymbolBundleSearcherBackend interface {
+	SearchSymbolBundlesScopedContext(context.Context, string, []string, int) []SymbolBundle
+}
+
+type ContextSearcher interface {
+	SearchContext(context.Context, string, int) []SearchResult
+}
+
+type ContextDocCounter interface {
+	DocCountContext(context.Context) (int, bool)
+}
+
+func (b *SymbolSearcherBackend) SearchSymbolBundlesContext(ctx context.Context, query string, limit int) []SymbolBundle {
+	if ctx.Err() != nil || b == nil || b.s == nil {
+		return nil
+	}
+	if bs, ok := b.s.(interface {
+		SearchSymbolBundlesContext(context.Context, string, int) ([]graph.SymbolBundle, error)
+	}); ok {
+		bundles, err := bs.SearchSymbolBundlesContext(ctx, query, limit)
+		if err != nil {
+			return nil
+		}
+		return bundles
+	}
+	return b.SearchSymbolBundles(query, limit)
+}
+
+func (b *SymbolSearcherBackend) SearchSymbolBundlesScopedContext(ctx context.Context, query string, allow []string, limit int) []SymbolBundle {
+	if ctx.Err() != nil || b == nil || b.s == nil {
+		return nil
+	}
+	if bs, ok := b.s.(interface {
+		SearchSymbolBundlesRepoScopedContext(context.Context, string, []string, int) ([]graph.SymbolBundle, error)
+	}); ok {
+		bundles, err := bs.SearchSymbolBundlesRepoScopedContext(ctx, query, allow, limit)
+		if err != nil {
+			return nil
+		}
+		if bundles == nil {
+			return []SymbolBundle{}
+		}
+		return bundles
+	}
+	return b.SearchSymbolBundlesScoped(query, allow, limit)
+}
+
+func (b *SymbolSearcherBackend) SearchContext(ctx context.Context, query string, limit int) []SearchResult {
+	if ctx.Err() != nil || b == nil || b.s == nil {
+		return nil
+	}
+	if cs, ok := b.s.(interface {
+		SearchSymbolsContext(context.Context, string, int) ([]graph.SymbolHit, error)
+	}); ok {
+		hits, err := cs.SearchSymbolsContext(ctx, query, limit)
+		if err != nil {
+			return nil
+		}
+		out := make([]SearchResult, len(hits))
+		for i, h := range hits {
+			out[i] = SearchResult{ID: h.NodeID, Score: h.Score}
+		}
+		return out
+	}
+	return b.Search(query, limit)
+}
+
+func (b *SymbolSearcherBackend) DocCountContext(ctx context.Context) (int, bool) {
+	if ctx.Err() != nil || b == nil || b.s == nil {
+		return 0, false
+	}
+	if cs, ok := b.s.(interface {
+		SymbolFTSCountContext(context.Context) (int, error)
+	}); ok {
+		n, err := cs.SymbolFTSCountContext(ctx)
+		return n, err == nil && n >= 0
+	}
+	return b.DocCount()
+}
+
+// ContextChannelSearcher keeps request lifetime through text and vector channels.
+type ContextChannelSearcher interface {
+	SearchChannelsTimedContext(context.Context, string, int) ([]SearchResult, []string, ChannelTimings)
+}
+
+type ContextVectorOnly interface {
+	VectorChannelOnlyContext(context.Context, string, int) ([]string, ChannelTimings)
+}
