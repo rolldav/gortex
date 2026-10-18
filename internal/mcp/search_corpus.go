@@ -108,7 +108,7 @@ func (s *Server) mergeDocChannel(ctx context.Context, query string, nodes []*gra
 	}
 
 	start := time.Now()
-	wide := s.engineFor(ctx).SearchSymbolsScoped(query, docLimit, scope)
+	wide := s.requestSearchEngine(ctx).SearchSymbolsScoped(query, docLimit, scope)
 	if timings != nil {
 		timings.BM25ExpansionMS += time.Since(start).Milliseconds()
 	}

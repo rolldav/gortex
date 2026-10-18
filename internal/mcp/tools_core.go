@@ -1762,6 +1762,7 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	limit := req.GetInt("limit", 20)
 	offset := decodeCursor(req.GetString("cursor", ""))
 
+	eng := s.requestSearchEngine(ctx)
 	sess := s.sessionFor(ctx)
 	sess.recordSearch(q)
 
@@ -1964,10 +1965,10 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	var nodes []*graph.Node
 	var primaryCount int
 	if len(expandedTerms) > 0 {
-		nodes, primaryCount = fetchAndMergeBM25Timed(s.engineFor(ctx), q, expandedTerms, fetchLimit, scope, timings)
+		nodes, primaryCount = fetchAndMergeBM25Timed(eng, q, expandedTerms, fetchLimit, scope, timings)
 	} else {
 		bm25Start := time.Now()
-		nodes = s.engineFor(ctx).SearchSymbolsScoped(q, fetchLimit, scope)
+		nodes = eng.SearchSymbolsScoped(q, fetchLimit, scope)
 		timings.BM25PrimaryMS += time.Since(bm25Start).Milliseconds()
 		primaryCount = len(nodes)
 	}
@@ -2092,9 +2093,9 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 			prevDepth = deepLimit
 			var refetched []*graph.Node
 			if len(expandedTerms) > 0 {
-				refetched, _ = fetchAndMergeBM25Timed(s.engineFor(ctx), q, expandedTerms, deepLimit, scope, timings)
+				refetched, _ = fetchAndMergeBM25Timed(eng, q, expandedTerms, deepLimit, scope, timings)
 			} else {
-				refetched = s.engineFor(ctx).SearchSymbolsScoped(q, deepLimit, scope)
+				refetched = eng.SearchSymbolsScoped(q, deepLimit, scope)
 			}
 			kept := applyAllPostFilters(refetched)
 			if len(kept) > 0 {
@@ -2116,7 +2117,7 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	// clause degrades to a useful result set instead of an empty one.
 	filtersRelaxed := false
 	if len(nodes) == 0 && q != "" && (kindArg != "" || flavorArg != "" || fq.hasFieldFilters()) {
-		relaxed := filterNodes(s.engineFor(ctx).SearchSymbolsScoped(q, fetchLimit, scope), allowed)
+		relaxed := filterNodes(eng.SearchSymbolsScoped(q, fetchLimit, scope), allowed)
 		if len(relaxed) > 0 {
 			nodes = relaxed
 			filtersRelaxed = true
@@ -2135,7 +2136,7 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	decomposed := false
 	if len(nodes) == 0 && queryHasDecomposableSeparator(q) {
 		if leaves := decomposeQueryToLeaves(q); len(leaves) > 0 {
-			rescued, _ := fetchAndMergeBM25Timed(s.engineFor(ctx), "", leaves, fetchLimit, scope, timings)
+			rescued, _ := fetchAndMergeBM25Timed(eng, "", leaves, fetchLimit, scope, timings)
 			rescued = applyAllPostFilters(rescued)
 			if len(rescued) > 0 {
 				nodes = rescued
@@ -2238,7 +2239,7 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	// final rerank order; refining it and rebuilding nodes keeps the
 	// two aligned for the diversification pass below.
 	if !scope.SkipVectorChannel && s.searchConfig().CosineRerankEnabled() && len(rerankBreakdown) > 1 {
-		refined := s.engineFor(ctx).RefineByCosine(q, rerankBreakdown, 0)
+		refined := eng.RefineByCosine(q, rerankBreakdown, 0)
 		rerankBreakdown = refined
 		refinedNodes := make([]*graph.Node, 0, len(refined))
 		for _, c := range refined {
@@ -2360,7 +2361,7 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	if total == 0 && len(resolved.RepoAllow) > 0 {
 		wide := scope
 		wide.RepoAllow = nil
-		wideNodes, _ := fetchAndMergeBM25Timed(s.engineFor(ctx), q, expandedTerms, offset+limit, wide, timings)
+		wideNodes, _ := fetchAndMergeBM25Timed(eng, q, expandedTerms, offset+limit, wide, timings)
 		resp["scope_note"] = scopeZeroNote(resolved, len(wideNodes))
 	}
 	if fetchEscalated {
@@ -2431,7 +2432,7 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 		if len(pageBreakdown) > limit {
 			pageBreakdown = pageBreakdown[:limit]
 		}
-		resp["rerank"] = encodeRerankBreakdown(pageBreakdown, s.engineFor(ctx).Rerank())
+		resp["rerank"] = encodeRerankBreakdown(pageBreakdown, eng.Rerank())
 	}
 
 	// Per-phase Debug log line — single zap.Debug call carrying every

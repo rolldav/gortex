@@ -221,7 +221,7 @@ func addInPackSection(result map[string]any, key string, val any) {
 // (how sharply the top result beats the rest) into a high/medium/low verdict.
 // Returns nil when the search yields nothing.
 func (s *Server) inPackConfidence(ctx context.Context, task string) map[string]any {
-	eng := s.engineFor(ctx)
+	eng := s.requestSearchEngine(ctx)
 	if eng == nil || task == "" {
 		return nil
 	}
@@ -281,7 +281,7 @@ func (s *Server) lowConfidenceRetrievalNote(ctx context.Context, task string, sy
 	if strings.TrimSpace(task) == "" || len(syms) == 0 {
 		return nil
 	}
-	eng := s.engineFor(ctx)
+	eng := s.requestSearchEngine(ctx)
 	if eng == nil {
 		return nil
 	}

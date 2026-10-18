@@ -2742,7 +2742,7 @@ func (s *Server) handleExplore(ctx context.Context, req mcp.CallToolRequest) (*m
 	if errResult != nil {
 		return errResult, nil
 	}
-	eng := s.engineFor(ctx)
+	eng := s.requestSearchEngine(ctx)
 	if eng == nil {
 		return mcp.NewToolResultError("no indexed repository is available; run index_repository first"), nil
 	}

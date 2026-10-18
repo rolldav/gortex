@@ -230,7 +230,7 @@ func parseWinnowConstraints(req mcp.CallToolRequest) (winnowConstraints, error) 
 // caller's overlay view (when any) so winnow honours editor-buffer state
 // just like search_symbols.
 func (s *Server) winnowSymbols(ctx context.Context, c winnowConstraints, allowed map[string]bool) []winnowResult {
-	eng := s.engineFor(ctx)
+	eng := s.requestSearchEngine(ctx)
 	reader := s.readerFor(ctx)
 	var candidates []*graph.Node
 	textScores := make(map[string]float64)

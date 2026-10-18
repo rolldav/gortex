@@ -1776,7 +1776,7 @@ func (s *Server) handleSuggestPattern(ctx context.Context, req mcp.CallToolReque
 	var testPatterns []map[string]any
 	if prefix != "" {
 		// Search for test functions that match the example name.
-		testSearch := s.scopedNodeSlice(ctx, s.engineFor(ctx).SearchSymbols(node.Name, 20))
+		testSearch := s.scopedNodeSlice(ctx, s.requestSearchEngine(ctx).SearchSymbols(node.Name, 20))
 		for _, tn := range testSearch {
 			if !isTestFile(tn.FilePath) {
 				continue
@@ -2050,7 +2050,7 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 		if len(kw) < 3 {
 			continue
 		}
-		matches := s.scopedNodeSlice(ctx, s.engineFor(ctx).SearchSymbols(kw, 10))
+		matches := s.scopedNodeSlice(ctx, s.requestSearchEngine(ctx).SearchSymbols(kw, 10))
 		for _, m := range matches {
 			if m.Kind == graph.KindFile || m.Kind == graph.KindImport {
 				continue

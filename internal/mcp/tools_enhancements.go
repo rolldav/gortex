@@ -576,7 +576,7 @@ func (s *Server) handlePrefetchContext(ctx context.Context, req mcp.CallToolRequ
 
 	// 1. BM25 search on task description (weight 0.4)
 	if task != "" {
-		searchResults := s.scopedNodeSlice(ctx, s.engineFor(ctx).SearchSymbols(task, 30))
+		searchResults := s.scopedNodeSlice(ctx, s.requestSearchEngine(ctx).SearchSymbols(task, 30))
 		maxScore := 1.0
 		for i, n := range searchResults {
 			if n.Kind == graph.KindFile || n.Kind == graph.KindImport {

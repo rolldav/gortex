@@ -64,7 +64,7 @@ func (s *Server) handleQueryProject(ctx context.Context, req mcp.CallToolRequest
 	// Search the base graph unscoped, then confine to the target's
 	// repos. Using s.engine (not engineFor) keeps this off the session
 	// overlay and clamp — query_project is an explicit cross-project read.
-	nodes := s.engine.SearchSymbolsScoped(q, limit*5, query.QueryOptions{})
+	nodes := s.engine.WithContext(ctx).SearchSymbolsScoped(q, limit*5, query.QueryOptions{})
 	nodes = filterNodes(nodes, allowed)
 	if len(nodes) > limit {
 		nodes = nodes[:limit]

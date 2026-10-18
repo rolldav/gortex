@@ -15,7 +15,7 @@ import (
 )
 
 // A controlled wait at the store boundary lets this test isolate the real
-// middleware -> engineFor -> Swappable context chain without private DB access.
+// middleware -> search handler -> Swappable context chain without private DB access.
 // The storage package separately tests actual exhausted SQLite pool waits.
 type deadlineSearchStore struct {
 	*store_sqlite.Store
@@ -39,6 +39,22 @@ func (s *deadlineSearchStore) SearchSymbolBundlesRepoScopedContext(ctx context.C
 	return s.Store.SearchSymbolBundlesRepoScopedContext(ctx, q, allow, limit)
 }
 
+func (s *deadlineSearchStore) SearchSymbolBundles(q string, limit int) ([]graph.SymbolBundle, error) {
+	close(s.entered)
+	<-s.release
+	return s.Store.SearchSymbolBundles(q, limit)
+}
+
+func (s *deadlineSearchStore) SearchSymbolBundlesContext(ctx context.Context, q string, limit int) ([]graph.SymbolBundle, error) {
+	close(s.entered)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.release:
+	}
+	return s.Store.SearchSymbolBundlesContext(ctx, q, limit)
+}
+
 func TestSearchDeadlineReleasesMCPHandler(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	store, err := store_sqlite.Open(filepath.Join(t.TempDir(), "search.sqlite"))
@@ -55,22 +71,24 @@ func TestSearchDeadlineReleasesMCPHandler(t *testing.T) {
 	defer close(gated.release)
 	srv.engine = query.NewEngine(store)
 	srv.engine.SetSearch(search.NewSwappable(search.NewSymbolSearcherBackend(gated)))
-	opts := query.QueryOptions{RepoAllow: map[string]bool{"app": true}, SkipInnerRerank: true, SkipVectorChannel: true}
 	// Check the real scoped SQL separately before enabling the controlled wait.
 	if hits, err := store.SearchSymbolBundlesRepoScoped("widget extensions", []string{"app"}, 5); err != nil || len(hits) != 1 {
 		t.Fatalf("positive scoped SQL control: %v %v", hits, err)
 	}
-	srv.ToolCallTimeout = 100 * time.Millisecond
+	srv.ToolCallTimeout = time.Second
 	finished := make(chan struct{})
-	srv.addTool(mcplib.NewTool("test_cancellable_sql_search"), func(ctx context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	srv.addTool(mcplib.NewTool("test_cancellable_sql_search"), func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		defer close(finished)
-		srv.engineFor(ctx).GatherSymbolCandidates("widget extensions", 5, opts, nil)
-		return mcplib.NewToolResultText("returned"), nil
+		return srv.handleSearchSymbols(ctx, req)
 	})
 	result := make(chan *mcplib.CallToolResult, 1)
-	go func() { result <- callToolByName(t, srv, context.Background(), "test_cancellable_sql_search", nil) }()
+	go func() {
+		result <- callToolByName(t, srv, context.Background(), "test_cancellable_sql_search", map[string]any{"query": "WidgetExtensions"})
+	}()
 	select {
 	case <-gated.entered:
+	case res := <-result:
+		t.Fatalf("search returned before controlled store: %s", toolText(res))
 	case <-time.After(2 * time.Second):
 		t.Fatal("MCP handler did not reach scoped store")
 	}

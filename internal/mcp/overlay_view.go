@@ -205,12 +205,18 @@ func (s *Server) engineFor(ctx context.Context) *query.Engine {
 	}
 	view := requestViewFromContext(ctx)
 	if v := OverlayViewFromContext(ctx); v != nil {
-		return s.engine.WithViewLayers(v, view.candidateLayers()).WithContext(ctx)
+		return s.engine.WithViewLayers(v, view.candidateLayers())
 	}
 	if view.routed() {
-		return s.engine.WithViewLayers(view.reader, view.candidateLayers()).WithContext(ctx)
+		return s.engine.WithViewLayers(view.reader, view.candidateLayers())
 	}
-	return s.engine.WithContext(ctx)
+	return s.engine
+}
+
+// requestSearchEngine binds cancellation at search execution, preserving
+// engineFor's zero-allocation identity contract for ordinary graph access.
+func (s *Server) requestSearchEngine(ctx context.Context) *query.Engine {
+	return s.engineFor(ctx).WithContext(ctx)
 }
 
 // overlayLayerCacheEntry is one (sessionID, content-hash sum) bucket
